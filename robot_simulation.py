@@ -18,8 +18,8 @@ from labauto import loadInstructions
 # ==============================================================================
 # CONFIGURAZIONE FLAG DI SIMULAZIONE
 # ==============================================================================
-# Scegli lo shaper da utilizzare: "NONE", "ZV", "ZVD", "ZVDD"
-SHAPER_TYPE = "ZVDD" 
+# Scegli lo shaper da utilizzare: "NONE", "ZV", "ZVD", "ZVDD", "EI"
+SHAPER_TYPE = "EI" 
 
 # Inserisci qui il nome ESATTO del file salvato senza shaper (con estensione .mat)
 MANUAL_BASELINE_FILE = "test_trj1_baseline.mat"
@@ -195,7 +195,79 @@ class ZVDDShaper:
         self.delays = []
         self.weights = []
         
-        # 1. Primo impulso (t = 0)
+        # 1. Primo impulso
+        self.delays.append(0)
+        self.weights.append(A1)
+        
+        # 2. Secondo impulso
+        t2 = np.pi / omega_d
+        n2_esatto = t2 / Tc 
+        N2 = int(np.floor(n2_esatto))
+        alpha2 = n2_esatto - N2 
+        
+        self.delays.append(N2)
+        self.weights.append(A2 * (1 - alpha2)) 
+        self.delays.append(N2 + 1)
+        self.weights.append(A2 * alpha2)
+        
+        # 3. Terzo impulso
+        t3 = 2 * np.pi / omega_d
+        n3_esatto = t3 / Tc
+        N3 = int(np.floor(n3_esatto))
+        alpha3 = n3_esatto - N3
+        
+        self.delays.append(N3)
+        self.weights.append(A3 * (1 - alpha3))
+        self.delays.append(N3 + 1)
+        self.weights.append(A3 * alpha3)
+
+        # 4. Quarto impulso
+        t4 = 3 * np.pi / omega_d
+        n4_esatto = t4 / Tc
+        N4 = int(np.floor(n4_esatto))
+        alpha4 = n4_esatto - N4
+        
+        self.delays.append(N4)
+        self.weights.append(A4 * (1 - alpha4))
+        self.delays.append(N4 + 1)
+        self.weights.append(A4 * alpha4)
+        
+        self.buffer_size = max(self.delays) + 1
+        self.history = deque([(0.0, 0.0, 0.0)] * self.buffer_size, maxlen=self.buffer_size)
+        self.initialized = False
+
+    def shape(self, q, dq, ddq):
+        if not self.initialized:
+            self.history = deque([(q, dq, ddq)] * self.buffer_size, maxlen=self.buffer_size)
+            self.initialized = True
+            
+        self.history.appendleft((q, dq, ddq))
+        
+        shaped_q = sum(w * self.history[d][0] for w, d in zip(self.weights, self.delays))
+        shaped_dq = sum(w * self.history[d][1] for w, d in zip(self.weights, self.delays))
+        shaped_ddq = sum(w * self.history[d][2] for w, d in zip(self.weights, self.delays))
+        
+        return shaped_q, shaped_dq, shaped_ddq
+
+# ==============================================================================
+# CLASSE INPUT SHAPER (EI - Extra Insensitive due-gobbe)
+# ==============================================================================
+class EIShaper:
+    def __init__(self, omega_n, zeta, Tc, V_max=0.05):
+        # V_max = tolleranza vibrazione residua (default 5%)
+        omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
+        K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
+        
+        # Calcolo ampiezze ideali degli impulsi EI (3 impulsi come ZVD)
+        Denom = (1 + K)**2
+        A1 = (1 + V_max) / Denom
+        A2 = (2 * K * (1 - V_max)) / Denom
+        A3 = (K**2 * (1 + V_max)) / Denom
+        
+        self.delays = []
+        self.weights = []
+        
+        # 1. Primo impulso
         self.delays.append(0)
         self.weights.append(A1)
         
@@ -220,17 +292,6 @@ class ZVDDShaper:
         self.weights.append(A3 * (1 - alpha3))
         self.delays.append(N3 + 1)
         self.weights.append(A3 * alpha3)
-
-        # 4. Quarto impulso (t = 3*pi / omega_d)
-        t4 = 3 * np.pi / omega_d
-        n4_esatto = t4 / Tc
-        N4 = int(np.floor(n4_esatto))
-        alpha4 = n4_esatto - N4
-        
-        self.delays.append(N4)
-        self.weights.append(A4 * (1 - alpha4))
-        self.delays.append(N4 + 1)
-        self.weights.append(A4 * alpha4)
         
         self.buffer_size = max(self.delays) + 1
         self.history = deque([(0.0, 0.0, 0.0)] * self.buffer_size, maxlen=self.buffer_size)
@@ -273,7 +334,7 @@ Tc = robot.get_sampling_period()
 # INIZIALIZZAZIONE DELLO SHAPER ESTRAENDO I DATI
 # ------------------------------------------------------------------------------
 shaper = None
-if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD"]:
+if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD", "EI"]:
     mat_baseline_path = f"{model_name}/tests/{MANUAL_BASELINE_FILE}"
 
     if os.path.exists(mat_baseline_path):
@@ -286,6 +347,9 @@ if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD"]:
             shaper = ZVDShaper(omega_n, zeta, Tc)
         elif SHAPER_TYPE == "ZVDD":
             shaper = ZVDDShaper(omega_n, zeta, Tc)
+        elif SHAPER_TYPE == "EI":
+            # Puoi modificare V_max passando un 4° parametro, es: EIShaper(omega_n, zeta, Tc, 0.05)
+            shaper = EIShaper(omega_n, zeta, Tc) 
             
         print(f"[STATUS] Input Shaper {SHAPER_TYPE} ATTIVO: omega_n={omega_n:.3f} rad/s, zeta={zeta:.5f}")
     else:
@@ -375,8 +439,8 @@ reference_acceleration = reference_signal[:, 2*dof:]
 
 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-# Cambia il suffisso in base allo shaper selezionato
-mode_suffix = f"shaped_{SHAPER_TYPE.lower()}" if SHAPER_TYPE != "NONE" else "baseline"
+# Suffix con nome in MAIUSCOLO
+mode_suffix = f"shaped_{SHAPER_TYPE.upper()}" if SHAPER_TYPE != "NONE" else "baseline"
 
 if SHAPER_TYPE == "NONE":
     filename = f"{model_name}/tests/{program_name}_{mode_suffix}.mat"
@@ -421,7 +485,7 @@ for i, a in enumerate(labels):
     fig1.add_trace(go.Scatter(x=t, y=control_action[:, i], name=f"F_{a}", legendgroup=f"u_{a}"), row=3, col=col)
 
 fig1.update_xaxes(title_text="Time (s)", row=3, col=2)
-fig1.update_layout(title=f"Tracking ({mode_suffix.upper()}): position / velocity / control", height=900, width=1200, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
+fig1.update_layout(title=f"Tracking ({mode_suffix}): position / velocity / control", height=900, width=1200, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
 fig1.update_xaxes(showgrid=True)
 fig1.update_yaxes(showgrid=True)
 
@@ -445,7 +509,7 @@ for i, a in enumerate(labels):
     fig2.add_trace(go.Scatter(x=t, y=control_action[:, i], name=f"F_{a}", legendgroup=f"u_{a}"), row=3, col=col)
 
 fig2.update_xaxes(title_text="Time (s)", row=3, col=2)
-fig2.update_layout(title=f"Errors ({mode_suffix.upper()}): position error / velocity error / control", height=900, width=1200, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
+fig2.update_layout(title=f"Errors ({mode_suffix}): position error / velocity error / control", height=900, width=1200, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
 fig2.update_xaxes(showgrid=True)
 fig2.update_yaxes(showgrid=True)
 
