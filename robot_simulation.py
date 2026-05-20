@@ -18,7 +18,8 @@ from labauto import loadInstructions
 # ==============================================================================
 # CONFIGURAZIONE FLAG DI SIMULAZIONE
 # ==============================================================================
-USE_SHAPER = True  # Cambia a True per usare lo Shaper, False per la Baseline
+# Scegli lo shaper da utilizzare: "NONE", "ZV", "ZVD", "ZVDD"
+SHAPER_TYPE = "ZVDD" 
 
 # Inserisci qui il nome ESATTO del file salvato senza shaper (con estensione .mat)
 MANUAL_BASELINE_FILE = "test_trj1_baseline.mat"
@@ -31,6 +32,7 @@ def extract_tz_from_data(mat_file_path, Tc):
         print(f"Estrazione parametri dal file: {mat_file_path}")
         data = loadmat(mat_file_path)
         t = data["time"].flatten()
+        
         # Calcoliamo l'errore di posizione (asse x)
         error_x = (data["reference_position"] - data["joint_position"])[:, 0]
         
@@ -72,57 +74,175 @@ def extract_tz_from_data(mat_file_path, Tc):
         return 1.5, 0.0
 
 # ==============================================================================
-# CLASSE INPUT SHAPER (ZV - Zero Vibration con Ritardo Frazionario)
+# CLASSE INPUT SHAPER (ZV - Zero Vibration)
 # ==============================================================================
 class ZVShaper:
     def __init__(self, omega_n, zeta, Tc):
-        # Calcolo della frequenza smorzata
         omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
-        
-        # Calcolo del decadimento K
         K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
         
-        # Calcolo ampiezze ideali degli impulsi
         A1 = 1 / (1 + K)
         A2 = K / (1 + K)
         
-        # --- IMPLEMENTAZIONE RITARDO FRAZIONARIO ---
         self.delays = []
         self.weights = []
         
-        # 1. Primo impulso (t=0) cade esattamente al campione 0
+        # 1. Primo impulso
         self.delays.append(0)
         self.weights.append(A1)
         
-        # 2. Secondo impulso (t = pi / omega_d)
+        # 2. Secondo impulso
         t2 = np.pi / omega_d
-        n_esatto = t2 / Tc  # Es: 50.3
+        n2_esatto = t2 / Tc 
+        N2 = int(np.floor(n2_esatto)) 
+        alpha2 = n2_esatto - N2 
         
-        N2 = int(np.floor(n_esatto))  # Parte intera (Es: 50)
-        alpha = n_esatto - N2         # Parte frazionaria (Es: 0.3)
-        
-        # Distribuiamo l'ampiezza A2 su due campioni adiacenti
         self.delays.append(N2)
-        self.weights.append(A2 * (1 - alpha))  # Quota per il campione N2
-        
+        self.weights.append(A2 * (1 - alpha2)) 
         self.delays.append(N2 + 1)
-        self.weights.append(A2 * alpha)        # Quota per il campione N2+1
+        self.weights.append(A2 * alpha2) 
         
-        # Inizializzazione del buffer storico per i riferimenti
         self.buffer_size = max(self.delays) + 1
         self.history = deque([(0.0, 0.0, 0.0)] * self.buffer_size, maxlen=self.buffer_size)
         self.initialized = False
 
     def shape(self, q, dq, ddq):
-        # Inizializza il buffer con il primo valore reale per evitare "salti" all'avvio
         if not self.initialized:
             self.history = deque([(q, dq, ddq)] * self.buffer_size, maxlen=self.buffer_size)
             self.initialized = True
             
-        # Aggiunge i nuovi riferimenti in testa (sinistra) al buffer
         self.history.appendleft((q, dq, ddq))
         
-        # Calcola i valori "shapati" combinando pesi e ritardi
+        shaped_q = sum(w * self.history[d][0] for w, d in zip(self.weights, self.delays))
+        shaped_dq = sum(w * self.history[d][1] for w, d in zip(self.weights, self.delays))
+        shaped_ddq = sum(w * self.history[d][2] for w, d in zip(self.weights, self.delays))
+        
+        return shaped_q, shaped_dq, shaped_ddq
+
+# ==============================================================================
+# CLASSE INPUT SHAPER (ZVD - Zero Vibration and Derivative)
+# ==============================================================================
+class ZVDShaper:
+    def __init__(self, omega_n, zeta, Tc):
+        omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
+        K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
+        
+        A1 = 1 / ((1 + K)**2)
+        A2 = (2 * K) / ((1 + K)**2)
+        A3 = (K**2) / ((1 + K)**2)
+        
+        self.delays = []
+        self.weights = []
+        
+        # 1. Primo impulso
+        self.delays.append(0)
+        self.weights.append(A1)
+        
+        # 2. Secondo impulso (t = pi / omega_d)
+        t2 = np.pi / omega_d
+        n2_esatto = t2 / Tc 
+        N2 = int(np.floor(n2_esatto))
+        alpha2 = n2_esatto - N2 
+        
+        self.delays.append(N2)
+        self.weights.append(A2 * (1 - alpha2)) 
+        self.delays.append(N2 + 1)
+        self.weights.append(A2 * alpha2)
+        
+        # 3. Terzo impulso (t = 2*pi / omega_d)
+        t3 = 2 * np.pi / omega_d
+        n3_esatto = t3 / Tc
+        N3 = int(np.floor(n3_esatto))
+        alpha3 = n3_esatto - N3
+        
+        self.delays.append(N3)
+        self.weights.append(A3 * (1 - alpha3))
+        self.delays.append(N3 + 1)
+        self.weights.append(A3 * alpha3)
+        
+        self.buffer_size = max(self.delays) + 1
+        self.history = deque([(0.0, 0.0, 0.0)] * self.buffer_size, maxlen=self.buffer_size)
+        self.initialized = False
+
+    def shape(self, q, dq, ddq):
+        if not self.initialized:
+            self.history = deque([(q, dq, ddq)] * self.buffer_size, maxlen=self.buffer_size)
+            self.initialized = True
+            
+        self.history.appendleft((q, dq, ddq))
+        
+        shaped_q = sum(w * self.history[d][0] for w, d in zip(self.weights, self.delays))
+        shaped_dq = sum(w * self.history[d][1] for w, d in zip(self.weights, self.delays))
+        shaped_ddq = sum(w * self.history[d][2] for w, d in zip(self.weights, self.delays))
+        
+        return shaped_q, shaped_dq, shaped_ddq
+
+# ==============================================================================
+# CLASSE INPUT SHAPER (ZVDD - Zero Vibration, Derivative & Second Derivative)
+# ==============================================================================
+class ZVDDShaper:
+    def __init__(self, omega_n, zeta, Tc):
+        omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
+        K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
+        
+        # Calcolo ampiezze ideali degli impulsi ZVDD (pattern binomiale)
+        Denom = (1 + K)**3
+        A1 = 1 / Denom
+        A2 = (3 * K) / Denom
+        A3 = (3 * (K**2)) / Denom
+        A4 = (K**3) / Denom
+        
+        self.delays = []
+        self.weights = []
+        
+        # 1. Primo impulso (t = 0)
+        self.delays.append(0)
+        self.weights.append(A1)
+        
+        # 2. Secondo impulso (t = pi / omega_d)
+        t2 = np.pi / omega_d
+        n2_esatto = t2 / Tc 
+        N2 = int(np.floor(n2_esatto))
+        alpha2 = n2_esatto - N2 
+        
+        self.delays.append(N2)
+        self.weights.append(A2 * (1 - alpha2)) 
+        self.delays.append(N2 + 1)
+        self.weights.append(A2 * alpha2)
+        
+        # 3. Terzo impulso (t = 2*pi / omega_d)
+        t3 = 2 * np.pi / omega_d
+        n3_esatto = t3 / Tc
+        N3 = int(np.floor(n3_esatto))
+        alpha3 = n3_esatto - N3
+        
+        self.delays.append(N3)
+        self.weights.append(A3 * (1 - alpha3))
+        self.delays.append(N3 + 1)
+        self.weights.append(A3 * alpha3)
+
+        # 4. Quarto impulso (t = 3*pi / omega_d)
+        t4 = 3 * np.pi / omega_d
+        n4_esatto = t4 / Tc
+        N4 = int(np.floor(n4_esatto))
+        alpha4 = n4_esatto - N4
+        
+        self.delays.append(N4)
+        self.weights.append(A4 * (1 - alpha4))
+        self.delays.append(N4 + 1)
+        self.weights.append(A4 * alpha4)
+        
+        self.buffer_size = max(self.delays) + 1
+        self.history = deque([(0.0, 0.0, 0.0)] * self.buffer_size, maxlen=self.buffer_size)
+        self.initialized = False
+
+    def shape(self, q, dq, ddq):
+        if not self.initialized:
+            self.history = deque([(q, dq, ddq)] * self.buffer_size, maxlen=self.buffer_size)
+            self.initialized = True
+            
+        self.history.appendleft((q, dq, ddq))
+        
         shaped_q = sum(w * self.history[d][0] for w, d in zip(self.weights, self.delays))
         shaped_dq = sum(w * self.history[d][1] for w, d in zip(self.weights, self.delays))
         shaped_ddq = sum(w * self.history[d][2] for w, d in zip(self.weights, self.delays))
@@ -132,7 +252,7 @@ class ZVShaper:
 # ==============================================================================
 # CONFIGURAZIONE E AVVIO SIMULAZIONE
 # ==============================================================================
-model_name = "crane"  # folder containing model.xml + control_config.yaml + motion program
+model_name = "crane"  
 program_name = "test_trj1"
 
 with open(f'{model_name}/control_config.yaml', 'r') as file:
@@ -141,7 +261,7 @@ with open(f'{model_name}/control_config.yaml', 'r') as file:
     dynamic_params = np.array(params_yaml['model_parameters'])
 
 xml_path = f"{model_name}/model.xml"
-robot = MuJoCoMechanicalSystem(xml_path=xml_path, motor_actuators=["motor_1"], motor_joints=["joint_1"], spring_joints=[],ee_site="payload")
+robot = MuJoCoMechanicalSystem(xml_path=xml_path, motor_actuators=["motor_1"], motor_joints=["joint_1"], spring_joints=[], ee_site="payload")
 robot = MuJoCoMechanicalSystem(xml_path=xml_path)
 robot.show()
 robot.initialize()
@@ -150,20 +270,27 @@ dof = robot.get_input_number()
 Tc = robot.get_sampling_period()
 
 # ------------------------------------------------------------------------------
-# INIZIALIZZAZIONE DELLO SHAPER ESTRAENDO I DATI (SE ATTIVATO)
+# INIZIALIZZAZIONE DELLO SHAPER ESTRAENDO I DATI
 # ------------------------------------------------------------------------------
 shaper = None
-if USE_SHAPER:
+if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD"]:
     mat_baseline_path = f"{model_name}/tests/{MANUAL_BASELINE_FILE}"
 
     if os.path.exists(mat_baseline_path):
         T_oscillazione, zeta = extract_tz_from_data(mat_baseline_path, Tc)
         omega_n = (2 * np.pi) / T_oscillazione
-        shaper = ZVShaper(omega_n, zeta, Tc)
-        print(f"[STATUS] Input Shaper ATTIVO: omega_n={omega_n:.3f} rad/s, zeta={zeta:.5f}")
+        
+        if SHAPER_TYPE == "ZV":
+            shaper = ZVShaper(omega_n, zeta, Tc)
+        elif SHAPER_TYPE == "ZVD":
+            shaper = ZVDShaper(omega_n, zeta, Tc)
+        elif SHAPER_TYPE == "ZVDD":
+            shaper = ZVDDShaper(omega_n, zeta, Tc)
+            
+        print(f"[STATUS] Input Shaper {SHAPER_TYPE} ATTIVO: omega_n={omega_n:.3f} rad/s, zeta={zeta:.5f}")
     else:
-        print(f"[ERRORE] File baseline non trovato in {mat_baseline_path}. Esecuzione SENZA shaper.")
-        USE_SHAPER = False
+        print(f"[ERRORE] File baseline non trovato in {mat_baseline_path}. Esecuzione in modalità BASELINE.")
+        SHAPER_TYPE = "NONE"
 else:
     print("[STATUS] Esecuzione in modalità BASELINE (Shaper Disattivato)")
 # ------------------------------------------------------------------------------
@@ -207,7 +334,7 @@ while ml.depending_instructions():
     target_DDq_is = target_DDq[0]
 
     # --- APPLICAZIONE CONDIZIONALE DELL'INPUT SHAPER ---
-    if USE_SHAPER and shaper is not None:
+    if SHAPER_TYPE != "NONE" and shaper is not None:
         shaped_q, shaped_dq, shaped_ddq = shaper.shape(target_q_is, target_Dq_is, target_DDq_is)
         reference = np.array([shaped_q, shaped_dq, shaped_ddq])
     else:
@@ -248,9 +375,14 @@ reference_acceleration = reference_signal[:, 2*dof:]
 
 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-# Cambia il suffisso in base alla modalità
-mode_suffix = "shaped" if USE_SHAPER else "baseline"
-filename = f"{model_name}/tests/{program_name}_{mode_suffix}_{timestamp}.mat" if USE_SHAPER else f"{model_name}/tests/{program_name}_{mode_suffix}.mat"
+# Cambia il suffisso in base allo shaper selezionato
+mode_suffix = f"shaped_{SHAPER_TYPE.lower()}" if SHAPER_TYPE != "NONE" else "baseline"
+
+if SHAPER_TYPE == "NONE":
+    filename = f"{model_name}/tests/{program_name}_{mode_suffix}.mat"
+else:
+    filename = f"{model_name}/tests/{program_name}_{mode_suffix}_{timestamp}.mat"
+
 test_data = {
     "reference_position": reference_position,
     "reference_velocity": reference_velocity,
