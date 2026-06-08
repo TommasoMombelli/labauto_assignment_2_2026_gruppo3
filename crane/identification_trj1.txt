@@ -1,4 +1,4 @@
 move: [0.0]
 pause: 0.5
 move: [1.0]
-pause: 20
+pause: 40

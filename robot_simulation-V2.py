@@ -15,6 +15,8 @@ from labauto import TrapezoidalMotionLaw
 from labauto import loadController
 from labauto import loadInstructions
 
+
+
 # ==============================================================================
 # CONFIGURAZIONE FLAG DI SIMULAZIONE
 # ==============================================================================
@@ -22,7 +24,7 @@ from labauto import loadInstructions
 # "IDENTIFY" -> Usa traiettoria semplice, calcola e salva i parametri.
 # "NONE"     -> Usa traiettoria complessa SENZA shaper (crea la baseline).
 # "ZV", "ZVD", "ZVDD", "EI" -> Usa traiettoria complessa CON shaper (caricando i parametri).
-SHAPER_TYPE = "EI" 
+SHAPER_TYPE = "NONE" 
 
 model_name = "crane"  
 
@@ -44,15 +46,15 @@ MANUAL_BASELINE_FILE = "test_trj1_baseline.mat"
 # ==============================================================================
 def extract_tz_from_data(mat_file_path, Tc):
     try:
-        print(f"Estrazione parametri dal file: {mat_file_path}")
+        print(f"\n--- Estrazione parametri dal file: {mat_file_path} ---")
         data = loadmat(mat_file_path)
         t = data["time"].flatten()
         
         # Calcoliamo l'errore di posizione (asse x)
         error_x = (data["reference_position"] - data["joint_position"])[:, 0]
         
-        # Analizziamo la vibrazione libera partendo da t = 3.0 secondi
-        start_idx = np.searchsorted(t, 3.0)
+        # Analizziamo la vibrazione libera partendo da t = 20.0 secondi
+        start_idx = np.searchsorted(t, 20.0)
         error_x_tail = error_x[start_idx:]
         t_tail = t[start_idx:]
         
@@ -61,7 +63,25 @@ def extract_tz_from_data(mat_file_path, Tc):
         
         # 'prominence' forza l'algoritmo a ignorare le microsospensioni e il rumore numerico.
         peaks, _ = find_peaks(error_x_tail, distance=min_dist, prominence=0.01)
+        t_peaks = t_tail[peaks]
         
+        # --- NOVITÀ: Generazione codice MATLAB da copiare e incollare ---
+        if len(peaks) > 0:
+            valori_picchi = error_x_tail[peaks]
+            
+            # Creiamo stringhe formattate in stile MATLAB come VETTORI RIGA [val1, val2, val3, ...]
+            str_t_peaks = "[" + ", ".join([f"{val:.4f}" for val in t_peaks]) + "]"
+            str_valori = "[" + ", ".join([f"{val:.6f}" for val in valori_picchi]) + "]"
+            
+            print("\n=== COPIA E INCOLLA IN MATLAB ===")
+            print("% Tempi in cui si verificano i picchi (vettore riga)")
+            print(f"peaks_times = {str_t_peaks};")
+            print("")
+            print("% Ampiezza dell'errore di posizione in quei picchi (vettore riga)")
+            print(f"valori_picchi = {str_valori};")
+            print("=================================\n")
+        # ----------------------------------------------------------------
+
         if len(peaks) >= 2:
             # 1. Calcolo del Periodo T
             periodi = np.diff(t_tail[peaks])
@@ -78,7 +98,7 @@ def extract_tz_from_data(mat_file_path, Tc):
             else:
                 zeta_esatto = 0.0 # Ampiezza costante o in crescita = smorzamento nullo
                 
-            print(f"--> Parametri estratti: T = {T_esatto:.4f} s, zeta = {zeta_esatto:.6f}")
+            print(f"--> Parametri estratti: T = {T_esatto:.4f} s, zeta = {zeta_esatto:.6f}\n")
             return T_esatto, zeta_esatto
         else:
             print("Non ci sono abbastanza picchi principali nella vibrazione residua. Uso default.")
