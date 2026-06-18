@@ -15,38 +15,73 @@ from labauto import TrapezoidalMotionLaw
 from labauto import loadController
 from labauto import loadInstructions
 
+
+
 # ==============================================================================
 # CONFIGURAZIONE FLAG DI SIMULAZIONE
 # ==============================================================================
-# Scegli lo shaper da utilizzare: "NONE", "ZV", "ZVD", "ZVDD", "EI"
-SHAPER_TYPE = "EI" 
+# Scegli la modalità: 
+# "IDENTIFY" -> Usa traiettoria semplice, calcola e salva i parametri.
+# "NONE"     -> Usa traiettoria complessa SENZA shaper (crea la baseline).
+# "ZV", "ZVD", "ZVDD", "EI" -> Usa traiettoria complessa CON shaper (caricando i parametri).
+SHAPER_TYPE = "NONE" 
+
+model_name = "crane"  
+
+# Scelta automatica del programma (traiettoria)
+if SHAPER_TYPE == "IDENTIFY":
+    program_name = "identification_trj1"
+else:
+    program_name = "test_trj1"
+
+print(f"[INIT] Modalità selezionata: {SHAPER_TYPE}")
+print(f"[INIT] Traiettoria in uso: {program_name}.txt")
 
 # Inserisci qui il nome ESATTO del file salvato senza shaper (con estensione .mat)
 MANUAL_BASELINE_FILE = "test_trj1_baseline.mat"
+
 
 # ==============================================================================
 # FUNZIONE DI ESTRAZIONE PARAMETRI DAI DATI (T, zeta)
 # ==============================================================================
 def extract_tz_from_data(mat_file_path, Tc):
     try:
-        print(f"Estrazione parametri dal file: {mat_file_path}")
+        print(f"\n--- Estrazione parametri dal file: {mat_file_path} ---")
         data = loadmat(mat_file_path)
         t = data["time"].flatten()
         
         # Calcoliamo l'errore di posizione (asse x)
         error_x = (data["reference_position"] - data["joint_position"])[:, 0]
         
-        # Analizziamo solo l'ultima metà della simulazione (vibrazione residua libera)
-        tail_idx = len(t) // 2
-        error_x_tail = error_x[tail_idx:]
-        t_tail = t[tail_idx:]
+        # Analizziamo la vibrazione libera partendo da t = 20.0 secondi
+        start_idx = np.searchsorted(t, 20.0)
+        error_x_tail = error_x[start_idx:]
+        t_tail = t[start_idx:]
         
         # Cerca i picchi PRINCIPALI (distanti almeno 1.0 sec per evitare falsi positivi)
         min_dist = int(1.0 / Tc)
         
         # 'prominence' forza l'algoritmo a ignorare le microsospensioni e il rumore numerico.
         peaks, _ = find_peaks(error_x_tail, distance=min_dist, prominence=0.01)
+        t_peaks = t_tail[peaks]
         
+        # --- NOVITÀ: Generazione codice MATLAB da copiare e incollare ---
+        if len(peaks) > 0:
+            valori_picchi = error_x_tail[peaks]
+            
+            # Creiamo stringhe formattate in stile MATLAB come VETTORI RIGA [val1, val2, val3, ...]
+            str_t_peaks = "[" + ", ".join([f"{val:.4f}" for val in t_peaks]) + "]"
+            str_valori = "[" + ", ".join([f"{val:.6f}" for val in valori_picchi]) + "]"
+            
+            print("\n=== COPIA E INCOLLA IN MATLAB ===")
+            print("% Tempi in cui si verificano i picchi (vettore riga)")
+            print(f"peaks_times = {str_t_peaks};")
+            print("")
+            print("% Ampiezza dell'errore di posizione in quei picchi (vettore riga)")
+            print(f"valori_picchi = {str_valori};")
+            print("=================================\n")
+        # ----------------------------------------------------------------
+
         if len(peaks) >= 2:
             # 1. Calcolo del Periodo T
             periodi = np.diff(t_tail[peaks])
@@ -63,7 +98,7 @@ def extract_tz_from_data(mat_file_path, Tc):
             else:
                 zeta_esatto = 0.0 # Ampiezza costante o in crescita = smorzamento nullo
                 
-            print(f"--> Parametri estratti: T = {T_esatto:.4f} s, zeta = {zeta_esatto:.6f}")
+            print(f"--> Parametri estratti: T = {T_esatto:.4f} s, zeta = {zeta_esatto:.6f}\n")
             return T_esatto, zeta_esatto
         else:
             print("Non ci sono abbastanza picchi principali nella vibrazione residua. Uso default.")
@@ -313,8 +348,8 @@ class EIShaper:
 # ==============================================================================
 # CONFIGURAZIONE E AVVIO SIMULAZIONE
 # ==============================================================================
-model_name = "crane"  
-program_name = "test_trj1"
+with open(f'{model_name}/control_config.yaml', 'r') as file:
+    params_yaml = yaml.safe_load(file)
 
 with open(f'{model_name}/control_config.yaml', 'r') as file:
     params_yaml = yaml.safe_load(file)
@@ -323,7 +358,7 @@ with open(f'{model_name}/control_config.yaml', 'r') as file:
 
 xml_path = f"{model_name}/model.xml"
 robot = MuJoCoMechanicalSystem(xml_path=xml_path, motor_actuators=["motor_1"], motor_joints=["joint_1"], spring_joints=[], ee_site="payload")
-robot = MuJoCoMechanicalSystem(xml_path=xml_path)
+# robot = MuJoCoMechanicalSystem(xml_path=xml_path)
 robot.show()
 robot.initialize()
 dof = robot.get_input_number()
@@ -331,15 +366,18 @@ dof = robot.get_input_number()
 Tc = robot.get_sampling_period()
 
 # ------------------------------------------------------------------------------
-# INIZIALIZZAZIONE DELLO SHAPER ESTRAENDO I DATI
+# INIZIALIZZAZIONE DELLO SHAPER CARICANDO I DATI SALVATI
 # ------------------------------------------------------------------------------
 shaper = None
 if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD", "EI"]:
-    mat_baseline_path = f"{model_name}/tests/{MANUAL_BASELINE_FILE}"
+    params_file = f"{model_name}/identified_params.yaml"
 
-    if os.path.exists(mat_baseline_path):
-        T_oscillazione, zeta = extract_tz_from_data(mat_baseline_path, Tc)
-        omega_n = (2 * np.pi) / T_oscillazione
+    if os.path.exists(params_file):
+        with open(params_file, 'r') as f:
+            saved_params = yaml.safe_load(f)
+        
+        omega_n = saved_params["omega_n"]
+        zeta = saved_params["zeta"]
         
         if SHAPER_TYPE == "ZV":
             shaper = ZVShaper(omega_n, zeta, Tc)
@@ -348,16 +386,16 @@ if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD", "EI"]:
         elif SHAPER_TYPE == "ZVDD":
             shaper = ZVDDShaper(omega_n, zeta, Tc)
         elif SHAPER_TYPE == "EI":
-            # Puoi modificare V_max passando un 4° parametro, es: EIShaper(omega_n, zeta, Tc, 0.05)
             shaper = EIShaper(omega_n, zeta, Tc) 
             
-        print(f"[STATUS] Input Shaper {SHAPER_TYPE} ATTIVO: omega_n={omega_n:.3f} rad/s, zeta={zeta:.5f}")
+        print(f"[STATUS] Input Shaper {SHAPER_TYPE} ATTIVO (Dati da file): omega_n={omega_n:.3f} rad/s, zeta={zeta:.5f}")
     else:
-        print(f"[ERRORE] File baseline non trovato in {mat_baseline_path}. Esecuzione in modalità BASELINE.")
+        print(f"[ERRORE] File parametri non trovato in {params_file}. Esegui prima lo script con SHAPER_TYPE = 'NONE'!")
         SHAPER_TYPE = "NONE"
 else:
     print("[STATUS] Esecuzione in modalità BASELINE (Shaper Disattivato)")
-# ------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
 
 decentralized_ctrl=loadController(Tc,controller_params,dynamic_params,model_name)
 decentralized_ctrl.initialize()
@@ -460,6 +498,29 @@ test_data = {
 }
 savemat(filename, {key: test_data[key] for key in test_data})
 print(f"[SALVATAGGIO] File salvato: {filename}")
+
+# ==============================================================================
+# IDENTIFICAZIONE E SALVATAGGIO PARAMETRI (Solo se SHAPER_TYPE == "NONE")
+# ==============================================================================
+if SHAPER_TYPE == "IDENTIFY":
+    print("\n--- AVVIO FASE DI IDENTIFICAZIONE ---")
+    T_oscillazione, zeta = extract_tz_from_data(filename, Tc)
+    omega_n = (2 * np.pi) / T_oscillazione
+    
+    # Creiamo un dizionario con i dati identificati
+    identified_data = {
+        "T": float(T_oscillazione),
+        "omega_n": float(omega_n),
+        "zeta": float(zeta)
+    }
+    
+    # Salviamo in un file YAML
+    params_file = f"{model_name}/identified_params.yaml"
+    with open(params_file, 'w') as f:
+        yaml.dump(identified_data, f)
+        
+    print(f"[IDENTIFICAZIONE] Parametri fisici salvati con successo in: {params_file}\n")
+
 
 # ==============================================================================
 # PLOTTING DEI RISULTATI
