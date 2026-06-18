@@ -356,6 +356,7 @@ with open(f'{model_name}/control_config.yaml', 'r') as file:
 # Create simulator for Gantry SEA robot (MuJoCo)
 xml_path = f"{model_name}/model.xml"
 robot = MuJoCoMechanicalSystem(xml_path=xml_path, motor_actuators=["motor_1"], motor_joints=["joint_1"], spring_joints=[], ee_site="payload")
+robot = MuJoCoMechanicalSystem(xml_path=xml_path)
 
 robot.show()
 robot.initialize()
