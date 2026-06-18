@@ -17,16 +17,13 @@ from labauto import loadInstructions
 
 
 
-# ==============================================================================
-# CONFIGURAZIONE FLAG DI SIMULAZIONE
-# ==============================================================================
-# Scegli la modalità: 
-# "IDENTIFY" -> Usa traiettoria semplice, calcola e salva i parametri.
-# "NONE"     -> Usa traiettoria complessa SENZA shaper (crea la baseline).
-# "ZV", "ZVD", "ZVDD", "EI" -> Usa traiettoria complessa CON shaper (caricando i parametri).
+# Scelta della modalità: 
+# "IDENTIFY" -> Usa traiettoria di identificazione, estrae il periodo e lo smorzamento e salva i risultati in "identified_params.yaml"
+# "NONE"     -> traiettoria completa, senza shaper, da usare come base di partenza -> baseline.
+# "ZV", "ZVD", "ZVDD", "EI" -> Usa traiettoria completa con il rispettivo shaper caricando i parametri.
 SHAPER_TYPE = "NONE" 
 
-model_name = "crane"  
+model_name = "crane"  # folder containing model.xml + control_config.yaml + motion program
 
 # Scelta automatica del programma (traiettoria)
 if SHAPER_TYPE == "IDENTIFY":
@@ -37,13 +34,13 @@ else:
 print(f"[INIT] Modalità selezionata: {SHAPER_TYPE}")
 print(f"[INIT] Traiettoria in uso: {program_name}.txt")
 
-# Inserisci qui il nome ESATTO del file salvato senza shaper (con estensione .mat)
+# nome del file baseline
 MANUAL_BASELINE_FILE = "test_trj1_baseline.mat"
 
 
-# ==============================================================================
+
 # FUNZIONE DI ESTRAZIONE PARAMETRI DAI DATI (T, zeta)
-# ==============================================================================
+
 def extract_tz_from_data(mat_file_path, Tc):
     try:
         print(f"\n--- Estrazione parametri dal file: {mat_file_path} ---")
@@ -53,7 +50,7 @@ def extract_tz_from_data(mat_file_path, Tc):
         # Calcoliamo l'errore di posizione (asse x)
         error_x = (data["reference_position"] - data["joint_position"])[:, 0]
         
-        # Analizziamo la vibrazione libera partendo da t = 20.0 secondi
+        # Analizziamo la vibrazione libera partendo da t = 20.0 secondi in modo da non considerare il transitorio
         start_idx = np.searchsorted(t, 20.0)
         error_x_tail = error_x[start_idx:]
         t_tail = t[start_idx:]
@@ -61,33 +58,34 @@ def extract_tz_from_data(mat_file_path, Tc):
         # Cerca i picchi PRINCIPALI (distanti almeno 1.0 sec per evitare falsi positivi)
         min_dist = int(1.0 / Tc)
         
-        # 'prominence' forza l'algoritmo a ignorare le microsospensioni e il rumore numerico.
+        # forza l'algoritmo a ignorare le microsospensioni e il rumore numerico.
         peaks, _ = find_peaks(error_x_tail, distance=min_dist, prominence=0.01)
         t_peaks = t_tail[peaks]
         
-        # --- NOVITÀ: Generazione codice MATLAB da copiare e incollare ---
-        if len(peaks) > 0:
-            valori_picchi = error_x_tail[peaks]
+        # salvare i valori dei picchi principali (non tutti i picchi, ma solo quelli significativi)
+        #usati per generare un grafico
+        # if len(peaks) > 0:
+        #     valori_picchi = error_x_tail[peaks]
             
-            # Creiamo stringhe formattate in stile MATLAB come VETTORI RIGA [val1, val2, val3, ...]
-            str_t_peaks = "[" + ", ".join([f"{val:.4f}" for val in t_peaks]) + "]"
-            str_valori = "[" + ", ".join([f"{val:.6f}" for val in valori_picchi]) + "]"
+        #     # Creiamo stringhe formattate in stile MATLAB come VETTORI RIGA [val1, val2, val3, ...]
+        #     str_t_peaks = "[" + ", ".join([f"{val:.4f}" for val in t_peaks]) + "]"
+        #     str_valori = "[" + ", ".join([f"{val:.6f}" for val in valori_picchi]) + "]"
             
-            print("\n=== COPIA E INCOLLA IN MATLAB ===")
-            print("% Tempi in cui si verificano i picchi (vettore riga)")
-            print(f"peaks_times = {str_t_peaks};")
-            print("")
-            print("% Ampiezza dell'errore di posizione in quei picchi (vettore riga)")
-            print(f"valori_picchi = {str_valori};")
-            print("=================================\n")
-        # ----------------------------------------------------------------
+        #     print("\n=== COPIA E INCOLLA IN MATLAB ===")
+        #     print("% Tempi in cui si verificano i picchi (vettore riga)")
+        #     print(f"peaks_times = {str_t_peaks};")
+        #     print("")
+        #     print("% Ampiezza dell'errore di posizione in quei picchi (vettore riga)")
+        #     print(f"valori_picchi = {str_valori};")
+        #     print("=================================\n")
+        
 
         if len(peaks) >= 2:
             # 1. Calcolo del Periodo T
             periodi = np.diff(t_tail[peaks])
             T_esatto = np.mean(periodi)
             
-            # 2. Calcolo dello Smorzamento zeta (Decremento Logaritmico)
+            # 2. Calcolo dello Smorzamento(Decremento Logaritmico)
             n = len(peaks) - 1
             x0 = error_x_tail[peaks[0]]
             xn = error_x_tail[peaks[-1]]
@@ -108,14 +106,14 @@ def extract_tz_from_data(mat_file_path, Tc):
         print(f"Errore durante l'analisi dei dati ({e}). Uso default.")
         return 1.5, 0.0
 
-# ==============================================================================
+
 # CLASSE INPUT SHAPER (ZV - Zero Vibration)
-# ==============================================================================
 class ZVShaper:
     def __init__(self, omega_n, zeta, Tc):
         omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
         K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
         
+        # Calcolo ampiezze ideali degli impulsi
         A1 = 1 / (1 + K)
         A2 = K / (1 + K)
         
@@ -154,14 +152,14 @@ class ZVShaper:
         
         return shaped_q, shaped_dq, shaped_ddq
 
-# ==============================================================================
+
 # CLASSE INPUT SHAPER (ZVD - Zero Vibration and Derivative)
-# ==============================================================================
 class ZVDShaper:
     def __init__(self, omega_n, zeta, Tc):
         omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
         K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
         
+        # Calcolo ampiezze ideali degli impulsi
         A1 = 1 / ((1 + K)**2)
         A2 = (2 * K) / ((1 + K)**2)
         A3 = (K**2) / ((1 + K)**2)
@@ -212,15 +210,16 @@ class ZVDShaper:
         
         return shaped_q, shaped_dq, shaped_ddq
 
-# ==============================================================================
+
+
 # CLASSE INPUT SHAPER (ZVDD - Zero Vibration, Derivative & Second Derivative)
-# ==============================================================================
+
 class ZVDDShaper:
     def __init__(self, omega_n, zeta, Tc):
         omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
         K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
         
-        # Calcolo ampiezze ideali degli impulsi ZVDD (pattern binomiale)
+        # Calcolo ampiezze ideali degli impulsi
         Denom = (1 + K)**3
         A1 = 1 / Denom
         A2 = (3 * K) / Denom
@@ -284,16 +283,16 @@ class ZVDDShaper:
         
         return shaped_q, shaped_dq, shaped_ddq
 
-# ==============================================================================
+
 # CLASSE INPUT SHAPER (EI - Extra Insensitive due-gobbe)
-# ==============================================================================
+
 class EIShaper:
     def __init__(self, omega_n, zeta, Tc, V_max=0.05):
         # V_max = tolleranza vibrazione residua (default 5%)
         omega_d = omega_n * np.sqrt(1 - zeta**2) if zeta < 1.0 else omega_n
         K = np.exp(-(zeta * np.pi) / np.sqrt(1 - zeta**2)) if zeta < 1.0 else 1.0
         
-        # Calcolo ampiezze ideali degli impulsi EI (3 impulsi come ZVD)
+        # Calcolo ampiezze ideali degli impulsi
         Denom = (1 + K)**2
         A1 = (1 + V_max) / Denom
         A2 = (2 * K * (1 - V_max)) / Denom
@@ -345,29 +344,60 @@ class EIShaper:
         
         return shaped_q, shaped_dq, shaped_ddq
 
-# ==============================================================================
-# CONFIGURAZIONE E AVVIO SIMULAZIONE
-# ==============================================================================
-with open(f'{model_name}/control_config.yaml', 'r') as file:
-    params_yaml = yaml.safe_load(file)
 
+
+# Load controller parameters and dynamic parameters
 with open(f'{model_name}/control_config.yaml', 'r') as file:
     params_yaml = yaml.safe_load(file)
     controller_params = params_yaml['controller']
     dynamic_params = np.array(params_yaml['model_parameters'])
 
+
+# Create simulator for Gantry SEA robot (MuJoCo)
 xml_path = f"{model_name}/model.xml"
 robot = MuJoCoMechanicalSystem(xml_path=xml_path, motor_actuators=["motor_1"], motor_joints=["joint_1"], spring_joints=[], ee_site="payload")
-# robot = MuJoCoMechanicalSystem(xml_path=xml_path)
+
 robot.show()
 robot.initialize()
 dof = robot.get_input_number()
 
+# Set the cycle time (sampling time) for motion law updates
 Tc = robot.get_sampling_period()
 
-# ----------------------------------------------------git p--------------------------
+# creo i nomi con cui saranno salvati i file 
+mode_suffix = f"shaped_{SHAPER_TYPE.upper()}" if SHAPER_TYPE != "NONE" else "baseline"
+timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+if SHAPER_TYPE == "NONE":
+    filename = f"{model_name}/tests/{program_name}_{mode_suffix}.mat"
+else:
+    filename = f"{model_name}/tests/{program_name}_{mode_suffix}_{timestamp}.mat"
+
+
+# IDENTIFICAZIONE E SALVATAGGIO PARAMETRI (Solo se SHAPER_TYPE == "IDENTIFY")
+
+if SHAPER_TYPE == "IDENTIFY":
+    print("\n--- AVVIO FASE DI IDENTIFICAZIONE ---")
+    T_oscillazione, zeta = extract_tz_from_data(filename, Tc)
+    omega_n = (2 * np.pi) / T_oscillazione
+    
+    # Creiamo un dizionario con i dati identificati
+    identified_data = {
+        "T": float(T_oscillazione),
+        "omega_n": float(omega_n),
+        "zeta": float(zeta)
+    }
+    
+    # Salviamo in un file YAML
+    params_file = f"{model_name}/identified_params.yaml"
+    with open(params_file, 'w') as f:
+        yaml.dump(identified_data, f)
+        
+    print(f"[IDENTIFICAZIONE] Parametri fisici salvati con successo in: {params_file}\n")
+
+
 # INIZIALIZZAZIONE DELLO SHAPER CARICANDO I DATI SALVATI
-# ------------------------------------------------------------------------------
+
 shaper = None
 if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD", "EI"]:
     params_file = f"{model_name}/identified_params.yaml"
@@ -394,19 +424,21 @@ if SHAPER_TYPE in ["ZV", "ZVD", "ZVDD", "EI"]:
         SHAPER_TYPE = "NONE"
 else:
     print("[STATUS] Esecuzione in modalità BASELINE (Shaper Disattivato)")
-# -----------------------------------------------------------------------------
 
 
+# Load the tuned controller using parameters from YAML
 decentralized_ctrl=loadController(Tc,controller_params,dynamic_params,model_name)
 decentralized_ctrl.initialize()
 decentralized_ctrl.set_umax(robot.get_umax())
 
+# Initial reference is equal to the initial state of the robot
 measured_output = robot.read_sensor_value()
 q0 = measured_output[:dof]
 Dq0 = measured_output[dof:]
 DDq0 = np.zeros(dof)
 initial_reference = np.concatenate((q0, Dq0, DDq0))
 
+# Define the Motion Law
 max_Dq = np.array([5.5]*dof)
 max_DDq = np.array([5.0]*dof)
 motion_law_params=dict()
@@ -415,11 +447,15 @@ motion_law_params['max_acceleration']=max_DDq
 ml = TrapezoidalMotionLaw(motion_law_params, Tc)
 ml.set_initial_condition(q0)
 
+# Define a sequence of motion instructions
 instructions = loadInstructions(f'{model_name}/{program_name}.txt')
 ml.add_instructions(instructions)
 
+# Read the initial force (motor-side actuators)
 joint_torque = robot.read_actuator_value()
 feedforward_action = np.array([0.0]*dof)
+
+print(f"joint_torque={joint_torque}, initial_reference={initial_reference}, measured_output={measured_output}")
 
 decentralized_ctrl.starting(initial_reference, measured_output, joint_torque, feedforward_action)
 
@@ -435,7 +471,7 @@ while ml.depending_instructions():
     target_Dq_is = target_Dq[0]
     target_DDq_is = target_DDq[0]
 
-    # --- APPLICAZIONE CONDIZIONALE DELL'INPUT SHAPER ---
+    # APPLICAZIONE DELL'INPUT SHAPER 
     if SHAPER_TYPE != "NONE" and shaper is not None:
         shaped_q, shaped_dq, shaped_ddq = shaper.shape(target_q_is, target_Dq_is, target_DDq_is)
         reference = np.array([shaped_q, shaped_dq, shaped_ddq])
@@ -444,9 +480,11 @@ while ml.depending_instructions():
 
     measured_output = robot.read_sensor_value()
 
+    # Controller computes desired actuator force (N) for the 3 motor actuators
     joint_torque = decentralized_ctrl.compute_control_action(reference, measured_output, feedforward_action)
     robot.write_actuator_value(joint_torque)
 
+    # Store data (before stepping)
     t.append(actual_time)
     measured_signal.append(measured_output)
     control_action.append(joint_torque)
@@ -454,20 +492,21 @@ while ml.depending_instructions():
     link_position.append(robot.link_position())
     actual_time += Tc
 
+     # Step MuJoCo
     robot.simulate()
 
+    # run close to real-time for teaching demos
     computation_time = time.perf_counter() - loop_t0
     time.sleep(max(0.0, Tc - computation_time))
 
-# ==============================================================================
-# POST-PROCESSING E SALVATAGGIO DATI
-# ==============================================================================
+
 t = np.array(t)
 measured_signal = np.array(measured_signal)
 control_action = np.array(control_action)
 reference_signal = np.array(reference_signal)
 link_position = np.array(link_position)
 
+# Post-processing
 joint_position = measured_signal[:, :dof]
 joint_velocity = measured_signal[:, dof:]
 
@@ -475,16 +514,10 @@ reference_position = reference_signal[:, :dof]
 reference_velocity = reference_signal[:, dof:2*dof]
 reference_acceleration = reference_signal[:, 2*dof:]
 
-timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-# Suffix con nome in MAIUSCOLO
-mode_suffix = f"shaped_{SHAPER_TYPE.upper()}" if SHAPER_TYPE != "NONE" else "baseline"
 
-if SHAPER_TYPE == "NONE":
-    filename = f"{model_name}/tests/{program_name}_{mode_suffix}.mat"
-else:
-    filename = f"{model_name}/tests/{program_name}_{mode_suffix}_{timestamp}.mat"
 
+# Save test data
 test_data = {
     "reference_position": reference_position,
     "reference_velocity": reference_velocity,
@@ -499,34 +532,16 @@ test_data = {
 savemat(filename, {key: test_data[key] for key in test_data})
 print(f"[SALVATAGGIO] File salvato: {filename}")
 
-# ==============================================================================
-# IDENTIFICAZIONE E SALVATAGGIO PARAMETRI (Solo se SHAPER_TYPE == "NONE")
-# ==============================================================================
-if SHAPER_TYPE == "IDENTIFY":
-    print("\n--- AVVIO FASE DI IDENTIFICAZIONE ---")
-    T_oscillazione, zeta = extract_tz_from_data(filename, Tc)
-    omega_n = (2 * np.pi) / T_oscillazione
-    
-    # Creiamo un dizionario con i dati identificati
-    identified_data = {
-        "T": float(T_oscillazione),
-        "omega_n": float(omega_n),
-        "zeta": float(zeta)
-    }
-    
-    # Salviamo in un file YAML
-    params_file = f"{model_name}/identified_params.yaml"
-    with open(params_file, 'w') as f:
-        yaml.dump(identified_data, f)
-        
-    print(f"[IDENTIFICAZIONE] Parametri fisici salvati con successo in: {params_file}\n")
 
 
-# ==============================================================================
+
+
+
 # PLOTTING DEI RISULTATI
-# ==============================================================================
+
 labels = ["x"]
 
+# --- Figure 1: position / velocity / control (3x3) ---
 fig1 = make_subplots(
     rows=3, cols=3,
     shared_xaxes=True,
@@ -537,12 +552,15 @@ fig1 = make_subplots(
 
 for i, a in enumerate(labels):
     col = i + 1
+    # Position
     fig1.add_trace(go.Scatter(x=t, y=joint_position[:, i], name=f"q_{a}", legendgroup=f"pos_{a}"), row=1, col=col)
     fig1.add_trace(go.Scatter(x=t, y=reference_position[:, i], name=f"qref_{mode_suffix}_{a}", legendgroup=f"pos_{a}", line=dict(dash="dash")), row=1, col=col)
     
+    # velocity
     fig1.add_trace(go.Scatter(x=t, y=joint_velocity[:, i], name=f"dq_{a}", legendgroup=f"vel_{a}"), row=2, col=col)
     fig1.add_trace(go.Scatter(x=t, y=reference_velocity[:, i], name=f"dqref_{mode_suffix}_{a}", legendgroup=f"vel_{a}", line=dict(dash="dash")), row=2, col=col)
     
+    # control
     fig1.add_trace(go.Scatter(x=t, y=control_action[:, i], name=f"F_{a}", legendgroup=f"u_{a}"), row=3, col=col)
 
 fig1.update_xaxes(title_text="Time (s)", row=3, col=2)
@@ -550,8 +568,11 @@ fig1.update_layout(title=f"Tracking ({mode_suffix}): position / velocity / contr
 fig1.update_xaxes(showgrid=True)
 fig1.update_yaxes(showgrid=True)
 
+# --- Errors ---
 position_error = reference_position - joint_position
 velocity_error = reference_velocity - joint_velocity
+
+# MAE per axis (x,y,z)
 mae_pos = np.mean(np.abs(position_error), axis=0)
 mae_vel = np.mean(np.abs(velocity_error), axis=0)
 
@@ -561,12 +582,16 @@ subplot_titles = (
     [f"Actuator force {labels[i]} (motor-side)" for i in range(dof)]
 )
 
+# --- Figure 2: position error / velocity error / control (3x3) ---
 fig2 = make_subplots(rows=3, cols=3, shared_xaxes=True, subplot_titles=subplot_titles)
 
 for i, a in enumerate(labels):
     col = i + 1
+    # Position error
     fig2.add_trace(go.Scatter(x=t, y=position_error[:, i], name=f"e_q_{a}", legendgroup=f"ep_{a}"), row=1, col=col)
+    # velocity error
     fig2.add_trace(go.Scatter(x=t, y=velocity_error[:, i], name=f"e_dq_{a}", legendgroup=f"ev_{a}"), row=2, col=col)
+    # Control (again, convenient to correlate with error
     fig2.add_trace(go.Scatter(x=t, y=control_action[:, i], name=f"F_{a}", legendgroup=f"u_{a}"), row=3, col=col)
 
 fig2.update_xaxes(title_text="Time (s)", row=3, col=2)
@@ -574,6 +599,7 @@ fig2.update_layout(title=f"Errors ({mode_suffix}): position error / velocity err
 fig2.update_xaxes(showgrid=True)
 fig2.update_yaxes(showgrid=True)
 
+# Show both windows
 fig1.show()
 fig2.show()
 robot.close()
