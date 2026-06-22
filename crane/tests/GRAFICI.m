@@ -10,7 +10,7 @@ if isempty(script_dir)
 end
 
 % load("C:\Users\sbarr\LabAuto\labauto_assignment_2_2026_gruppo3\crane\tests\test_trj1_shaped_ZVDD_20260520114420.mat")
-data = load("test_trj1_shaped_EI_20260609002518.mat");
+data = load("test_trj1_shaped_ZVDD_20260609002348.mat");
 data_Base = load("test_trj1_baseline");
 
 t = data.time(:);
@@ -30,22 +30,26 @@ subplot(3, 1, 1);
 plot(t_ref, data_Base.reference_position, '--r', 'LineWidth', 1.5);
 hold on;
 plot(t, data.joint_position, 'b', 'LineWidth', 1.5);
+hold on;
+plot(t, data.reference_position, '--g', 'LineWidth', 1.5);
 grid on;
 title('Inseguimento di Posizione');
 xlabel('Tempo [s]');
-ylabel('Posizione');
-legend('Reference', 'Actual', 'Location', 'best');
+ylabel('Posizione [m]');
+legend('Baseline\_ref', 'Actual', 'Actual\_ref', 'Location', 'best');
 
 % 2. Velocità (Reale vs Riferimento)
 subplot(3, 1, 2);
 plot(t_ref, data_Base.reference_velocity, '--r', 'LineWidth', 1.5);
 hold on;
 plot(t, data.joint_velocity, 'b', 'LineWidth', 1.5);
+hold on;
+plot(t, data.reference_velocity, '--g', 'LineWidth', 1.5);
 grid on;
 title('Inseguimento di Velocità');
 xlabel('Tempo [s]');
-ylabel('Velocità');
-legend('Reference', 'Actual', 'Location', 'best');
+ylabel('Velocità [m/s]');
+legend('Baseline\_ref', 'Actual', 'Actual\_ref', 'Location', 'best');
 
 % 3. Sforzo di Controllo (Joint Torque)
 subplot(3, 1, 3);
@@ -53,15 +57,15 @@ plot(t, data.joint_torque, 'k', 'LineWidth', 1.5);
 grid on;
 title('Sforzo di Controllo (Actuator Force)');
 xlabel('Tempo [s]');
-ylabel('Coppia / Forza');
+ylabel('Forza [N]');
 legend('Control Action', 'Location', 'best');
 
 %% FIGURA 2: Analisi degli Errori
 fig2 = figure('Name', ['Errori - ' name], 'NumberTitle', 'off');
 
 % Calcolo degli errori
-error_pos = data_Base.reference_position - data.joint_position;
-error_vel = data_Base.reference_velocity - data.joint_velocity;
+error_pos = data.reference_position - data.joint_position;
+error_vel = data.reference_velocity - data.joint_velocity;
 
 % Calcolo MAE (Mean Absolute Error)
 mae_pos = mean(abs(error_pos));
@@ -71,17 +75,17 @@ mae_vel = mean(abs(error_vel));
 subplot(2, 1, 1);
 plot(t, error_pos, 'b', 'LineWidth', 1.5);
 grid on;
-title(sprintf('Errore di Posizione (MAE = %.4f)', mae_pos));
+title(sprintf('Errore di Posizione (MAE = %.4f m)', mae_pos));
 xlabel('Tempo [s]');
-ylabel('Errore Posizione');
+ylabel('Errore Posizione [m]');
 
 % 2. Errore di Velocità
 subplot(2, 1, 2);
 plot(t, error_vel, 'r', 'LineWidth', 1.5);
 grid on;
-title(sprintf('Errore di Velocità (MAE = %.4f)', mae_vel));
+title(sprintf('Errore di Velocità (MAE = %.4f m/s)', mae_vel));
 xlabel('Tempo [s]');
-ylabel('Errore Velocità');
+ylabel('Errore Velocità [m/s]');
 
 %% =========================================================================
 % SALVATAGGIO DELLE IMMAGINI PNG
